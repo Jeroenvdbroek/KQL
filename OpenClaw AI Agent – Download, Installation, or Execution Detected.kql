@@ -1,0 +1,79 @@
+let OpenClawIndicators = dynamic([
+    "openclaw",
+    "openclaw.ai",
+    "github.com/openclaw",
+    "clawhub",
+    "moltbot"
+    ]);
+
+// --- Process activity: install + execution
+let ProcessSignals =
+    DeviceProcessEvents
+    | where TimeGenerated > ago(7d)
+    | where
+        ProcessCommandLine has_any (OpenClawIndicators)
+        or InitiatingProcessCommandLine has_any (OpenClawIndicators)
+    | extend SignalType = case(
+                              ProcessCommandLine has "install",
+                              "Installation",
+                              FileName in~ ("node", "npx", "openclaw"),
+                              "Execution",
+                              "Process"
+                          )
+    | project
+        TimeGenerated,
+        DeviceId,
+        DeviceName,
+        AccountUpn,
+        FileName,
+        ProcessCommandLine,
+        InitiatingProcessFileName,
+        InitiatingProcessCommandLine,
+        SignalType;
+
+// --- Network activity: download / fetch
+let NetworkSignals =
+    DeviceNetworkEvents
+    | where TimeGenerated > ago(7d)
+    | where
+        RemoteUrl has_any (OpenClawIndicators)
+    | project
+        TimeGenerated,
+        DeviceId,
+        DeviceName,
+        InitiatingProcessFileName,
+        InitiatingProcessCommandLine,
+        RemoteUrl,
+        RemotePort;
+
+// --- Correlate process + network on same device
+ProcessSignals
+| join kind=leftouter NetworkSignals on DeviceId
+| summarize
+    FirstSeen = min(TimeGenerated),
+    LastSeen = max(TimeGenerated),
+    SignalTypes = make_set(SignalType),
+    Processes = make_set(FileName),
+    CommandLines = make_set(ProcessCommandLine),
+    RemoteUrls = make_set(RemoteUrl)
+    by
+    DeviceName,
+    AccountUpn
+| extend Severity = case(
+                        array_length(SignalTypes) >= 3,
+                        "High",
+                        array_length(SignalTypes) == 2,
+                        "Medium",
+                        "Low"
+                    )
+| project
+    FirstSeen,
+    LastSeen,
+    DeviceName,
+    AccountUpn,
+    Severity,
+    SignalTypes,
+    Processes,
+    RemoteUrls,
+    CommandLines
+| order by Severity desc, LastSeen desc
