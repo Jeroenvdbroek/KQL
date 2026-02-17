@@ -1,0 +1,74 @@
+// Suspicious redirection ports
+let SMB_Port        = 445;
+let SMB_Legacy      = 139;
+let Kerberos_Port   = 88;
+let Kerberos_Pwd    = 464;
+let LDAP_Port       = 389;
+let LDAPS_Port      = 636;
+let GC_LDAP         = 3268;
+let GC_LDAPS        = 3269;
+let RPC_Port        = 135;
+let RPC_HTTP        = 593;
+let WinRM_HTTP      = 5985;
+let WinRM_HTTPS     = 5986;
+let SSH_Port        = 22;
+
+// Identify processes that make connections to multiple AD-related services
+DeviceNetworkEvents
+| where RemotePort in (
+    SMB_Port,
+    SMB_Legacy,
+    Kerberos_Port,
+    Kerberos_Pwd,
+    LDAP_Port,
+    LDAPS_Port,
+    GC_LDAP,
+    GC_LDAPS,
+    RPC_Port,
+    RPC_HTTP,
+    WinRM_HTTP,
+    WinRM_HTTPS,
+    SSH_Port
+)
+| where isnotempty(InitiatingProcessFileName)
+| where InitiatingProcessFileName !in~ ("System", "Idle", "svchost.exe")
+
+| summarize
+    SMB_RemoteIPs   = make_set_if(RemoteIP, RemotePort == SMB_Port or RemotePort == SMB_Legacy),
+    Kerb_RemoteIPs  = make_set_if(RemoteIP, RemotePort == Kerberos_Port or RemotePort == Kerberos_Pwd),
+    LDAP_RemoteIPs  = make_set_if(RemoteIP, RemotePort in (LDAP_Port, LDAPS_Port, GC_LDAP, GC_LDAPS)),
+    RPC_RemoteIPs   = make_set_if(RemoteIP, RemotePort == RPC_Port or RemotePort == RPC_HTTP),
+    WinRM_RemoteIPs = make_set_if(RemoteIP, RemotePort == WinRM_HTTP or RemotePort == WinRM_HTTPS),
+    SSH_RemoteIPs   = make_set_if(RemoteIP, RemotePort == SSH_Port),
+    CountEvents     = count(),
+    Timestamp       = max(Timestamp),
+    ReportId        = max(ReportId)
+    by DeviceId, DeviceName, InitiatingProcessFileName, InitiatingProcessId
+
+// Look for processes that touched SMB AND something else AD-related (now incl. SSH)
+| where array_length(SMB_RemoteIPs) > 0
+  and (
+        array_length(Kerb_RemoteIPs) > 0
+     or array_length(LDAP_RemoteIPs) > 0
+     or array_length(RPC_RemoteIPs) > 0
+     or array_length(WinRM_RemoteIPs) > 0
+     or array_length(SSH_RemoteIPs) > 0
+  )
+
+| project
+    Timestamp,
+    DeviceId,
+    DeviceName,
+    ReportId,
+    InitiatingProcessFileName,
+    InitiatingProcessId,
+    SMB_RemoteIPs,
+    Kerb_RemoteIPs,
+    LDAP_RemoteIPs,
+    RPC_RemoteIPs,
+    WinRM_RemoteIPs,
+    SSH_RemoteIPs,
+    CountEvents
+
+// Noise reduction
+//| where InitiatingProcessFileName != @""
