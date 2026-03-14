@@ -1,0 +1,238 @@
+// ============================================================
+// Rule:     Agnostic AI Agent Detection
+// Author:   JvdB (with AI assistance) // https://github.com/Jeroenvdbroek/
+// Version:  1.0
+// Updated:  14-03-2026
+// ============================================================
+//
+// DESCRIPTION:
+// Detects the installation, execution and network activity of
+// autonomous AI agents (agentic frameworks) on endpoints.
+// These agents can autonomously execute code, browse the web,
+// access APIs and exfiltrate data — often without user awareness.
+//
+// COVERAGE:
+// - Process events: installation and execution of AI agent frameworks
+// - Network events: outbound connections to known AI agent endpoints
+// - Correlation: devices showing both process AND network signals
+//
+// MITRE ATT&CK:
+// - T1059.006  Command and Scripting Interpreter: Python
+// - T1059.007  Command and Scripting Interpreter: JavaScript/Node.js
+// - T1071.001  Application Layer Protocol: Web Protocols
+// - T1048.003  Exfiltration Over Web Service
+// - T1190      Exploit Public-Facing Application (via MCP servers)
+// - T1072      Software Deployment Tools (autonomous agent execution)
+//
+// SEVERITY LOGIC:
+// - Critical : Medical/clinical data indicators OR active exfiltration
+//              to known LangChain/OpenAI endpoints OR browser automation
+//              with evasion techniques
+// - High     : Known dangerous frameworks (AutoGen, CrewAI, LangChain)
+//              OR multiple signal types (>=3)
+// - Medium   : Two signal types detected
+// - Low      : Single signal type, no additional context
+//
+// NOTES:
+// - ExcludedPaths contains known false positive sources
+// - AgnosticAIAgentIndicators is regularly updated with new frameworks
+// - Rule is intentionally broad to catch unknown/new agent frameworks
+// - Tune ExcludedPaths based on your environment
+//
+// REFERENCES:
+// - https://github.com/modelcontextprotocol
+// - https://github.com/langchain-ai
+// - https://github.com/microsoft/autogen
+// ============================================================
+let ExcludedPaths = dynamic([
+    "wdavdaemon_enterprise",
+    "find_python_package.py",
+    "get_react_component_versions.py",
+    "WerFault.exe"
+]);
+let AgnosticAIAgentIndicators = dynamic([
+    // === Original indicators ===
+    "openclaw",
+    "openclaw.ai",
+    "github.com/openclaw",
+    "clawhub",
+    "moltbot",
+
+    // === AutoGPT family ===
+    "autogpt",
+    "auto-gpt",
+    "significant-gravitas",
+    "github.com/significant-gravitas",
+    "loopgpt",
+
+    // === BabyAGI family ===
+    "babyagi",
+    "baby-agi",
+    "github.com/yoheinakajima",
+
+    // === AgentGPT ===
+    "agentgpt",
+    "agent-gpt",
+    "reworkd.ai",
+    "github.com/reworkd",
+
+    // === SuperAGI ===
+    "superagi",
+    "super-agi",
+    "github.com/transformeroptimus",
+
+    // === LangChain / LangGraph ===
+    "langchain",
+    "langgraph",
+    "langsmith",
+    "github.com/langchain-ai",
+
+    // === AutoGen (Microsoft) ===
+    "pyautogen",
+    "autogen",
+    "github.com/microsoft/autogen",
+
+    // === CrewAI ===
+    "crewai",
+    "crew-ai",
+    "github.com/crewaiinc",
+
+    // === Open Interpreter ===
+    "open-interpreter",
+    "openinterpreter",
+    "github.com/openinterpreter",
+
+    // === Superagent ===
+    "superagent.sh",
+    "github.com/superagent-ai",
+
+    // === Manus ===
+    "manus.ai",
+    "manus-agent",
+
+    // === GPT Researcher ===
+    "gpt-researcher",
+    "gptresearcher",
+    "github.com/assafelovic",
+
+    // === AgentVerse / Fetch.ai ===
+    "agentverse",
+    "fetch.ai",
+    "uagents",
+
+    // === Smolagents (HuggingFace) ===
+    "smolagents",
+    "github.com/huggingface/smolagents",
+
+    // === Haystack ===
+    "deepset-ai",
+    "github.com/deepset-ai/haystack",
+
+    // === Semantic Kernel ===
+    "semantic-kernel",
+    "semantickernel",
+
+    // === MCP (Model Context Protocol) — generic agent glue ===
+    "mcp-server",
+    "modelcontextprotocol",
+    "github.com/modelcontextprotocol",
+
+    // === Generic high-risk execution patterns ===
+    "npx agentgpt",
+    "npx autogpt",
+    "pip install crewai",
+    "pip install autogen",
+    "pip install langchain",
+    "pip install smolagents"
+]);
+
+// --- Process activity: install + execution
+let ProcessSignals =
+    DeviceProcessEvents
+    | where TimeGenerated > ago(1d)
+    | where
+        ProcessCommandLine has_any (AgnosticAIAgentIndicators)
+        or InitiatingProcessCommandLine has_any (AgnosticAIAgentIndicators)
+    | where not (ProcessCommandLine has_any (ExcludedPaths))
+    | where not (InitiatingProcessCommandLine has_any (ExcludedPaths))
+    | extend SignalType = case(
+        ProcessCommandLine has "install", "Installation",
+        ProcessCommandLine has "pip",     "PipInstall",
+        FileName in~ ("node", "npx", "python", "python3"), "Execution",
+        "Process"
+    )
+    | project
+        TimeGenerated,
+        ReportId,
+        DeviceId,
+        DeviceName,
+        AccountUpn,
+        FileName,
+        ProcessCommandLine,
+        InitiatingProcessFileName,
+        InitiatingProcessCommandLine,
+        SignalType;
+
+// --- Network activity: download / fetch
+let NetworkSignals =
+    DeviceNetworkEvents
+    | where TimeGenerated > ago(1d)
+    | where RemoteUrl has_any (AgnosticAIAgentIndicators)
+    | where not (InitiatingProcessCommandLine has_any (ExcludedPaths))
+    | project
+        TimeGenerated,
+        DeviceId,
+        DeviceName,
+        InitiatingProcessFileName,
+        InitiatingProcessCommandLine,
+        RemoteUrl,
+        RemotePort;
+
+// --- Correlate process + network on same device
+ProcessSignals
+| join kind=leftouter NetworkSignals on DeviceId
+| summarize
+    FirstSeen          = min(TimeGenerated),
+    LastSeen           = max(TimeGenerated),
+    SignalTypes        = make_set(SignalType),
+    Processes          = make_set(FileName),
+    CommandLines       = make_set(ProcessCommandLine),
+    RemoteUrls         = make_set(RemoteUrl),
+    ReportId           = take_any(ReportId),
+    DeviceId           = take_any(DeviceId)
+    by DeviceName, AccountUpn
+// ✅ Severity is HERE after summarize — CommandLines and RemoteUrls now exist
+| extend Severity = case(
+    // 🔴 Critical — clinical/medical data indicators
+    CommandLines has_any ("dvh", "radiation", "planning_agent", "rita", "dicom"),       "Critical",
+    // 🔴 Critical — active data exfiltration
+    RemoteUrls has_any ("api.smith.langchain.com", "api.openai.com", "langgraph.app"),  "Critical",
+    // 🔴 Critical — browser automation with evasion
+    CommandLines has_any ("playwright", "headless", "AutomationControlled"),            "Critical",
+    // 🟠 High — known dangerous specific MCP servers and frameworks
+    CommandLines has_any ("autogen", "crewai", "langchain", "langgraph",
+                          "mcp-server-browsermcp",
+                          "mcp-server-circleci",
+                          "azure-mcp-server"),                                          "High",
+    // 🟠 High — multiple signal types
+    array_length(SignalTypes) >= 3,                                                     "High",
+    // 🟡 Medium — two signal types
+    array_length(SignalTypes) == 2,                                                     "Medium",
+    // 🟢 Low — everything else
+    "Low"
+)
+| extend Timestamp = LastSeen
+| project
+    Timestamp,
+    DeviceId,
+    ReportId,
+    FirstSeen,
+    LastSeen,
+    DeviceName,
+    AccountUpn,
+    Severity,
+    SignalTypes,
+    Processes,
+    RemoteUrls,
+    CommandLines
+| order by Severity desc, LastSeen desc
