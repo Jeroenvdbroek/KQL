@@ -3,34 +3,34 @@ let CopyFailCL = dynamic([
     "algif-aead",
     "crypto-authencesn(hmac(sha256),cbc(aes))"
 ]);
-
-// New: Dirty Frag modules
 let DirtyFragCL = dynamic([
-    "esp4",
-    "esp6",
-    "rxrpc"
+    "crypto-fcrypt",
+    "crypto-pcbc(fcrypt)",
+    "net-pf-33"
 ]);
-
-let AllSuspiciousModules = array_concat(CopyFailCL, DirtyFragCL);
+let AllModules = array_concat(CopyFailCL, DirtyFragCL);
 
 let SuspiciousEP =
     DeviceProcessEvents
     | where TimeGenerated > ago(1h)
-    | where ProcessCommandLine has "/sbin/modprobe"
-        and ProcessCommandLine has_any(AllSuspiciousModules)
+    | where (FileName == "kmod" or InitiatingProcessFileName == "kmod")
+        or (ProcessCommandLine has "/sbin/modprobe -q" and ProcessCommandLine has_any(CopyFailCL))
+    | where ProcessCommandLine has_any(AllModules)
     | summarize Count=count() by DeviceName, AccountName
     | where Count >= 1
     | distinct DeviceName;
 
 DeviceProcessEvents
 | where TimeGenerated > ago(1h)
-| where ProcessCommandLine has "/sbin/modprobe"
-    and ProcessCommandLine has_any(AllSuspiciousModules)
+| where (FileName == "kmod" or InitiatingProcessFileName == "kmod")
+    or (ProcessCommandLine has "/sbin/modprobe -q" and ProcessCommandLine has_any(CopyFailCL))
+| where ProcessCommandLine has_any(AllModules)
 | where DeviceName in (SuspiciousEP)
 | extend ThreatFamily = case(
     ProcessCommandLine has_any(DirtyFragCL), "DirtyFrag",
     ProcessCommandLine has_any(CopyFailCL), "CopyFail",
     "Unknown"
-  )
-| project TimeGenerated, DeviceName, AccountName, ProcessCommandLine, ThreatFamily
+)
+| project TimeGenerated, DeviceName, AccountName, 
+    ProcessCommandLine, ThreatFamily
 | order by DeviceName asc, TimeGenerated asc
