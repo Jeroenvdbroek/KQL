@@ -1,0 +1,16 @@
+let DirtyFragCL = dynamic(["crypto-fcrypt","crypto-pcbc(fcrypt)","net-pf-33"]);
+let SuspiciousEP =
+    DeviceProcessEvents
+    | where TimeGenerated > ago(14d)
+    | where (FileName == "kmod" or InitiatingProcessFileName == "kmod")
+    | where ProcessCommandLine has_any(DirtyFragCL)
+    | summarize Count=count() by DeviceName, AccountName
+    | where Count >= 1
+    | distinct DeviceName;
+DeviceProcessEvents
+| where TimeGenerated > ago(14d)
+| where (FileName == "kmod" or InitiatingProcessFileName == "kmod")
+| where ProcessCommandLine has_any(DirtyFragCL)
+| where DeviceName in (SuspiciousEP)
+| project TimeGenerated, DeviceName, AccountName, ProcessCommandLine
+| order by DeviceName asc, TimeGenerated asc
