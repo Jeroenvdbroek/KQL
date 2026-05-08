@@ -1,0 +1,36 @@
+let CopyFailCL = dynamic([
+    "net-pf-38",
+    "algif-aead",
+    "crypto-authencesn(hmac(sha256),cbc(aes))"
+]);
+
+// New: Dirty Frag modules
+let DirtyFragCL = dynamic([
+    "esp4",
+    "esp6",
+    "rxrpc"
+]);
+
+let AllSuspiciousModules = array_concat(CopyFailCL, DirtyFragCL);
+
+let SuspiciousEP =
+    DeviceProcessEvents
+    | where TimeGenerated > ago(1h)
+    | where ProcessCommandLine has "/sbin/modprobe"
+        and ProcessCommandLine has_any(AllSuspiciousModules)
+    | summarize Count=count() by DeviceName, AccountName
+    | where Count >= 1
+    | distinct DeviceName;
+
+DeviceProcessEvents
+| where TimeGenerated > ago(1h)
+| where ProcessCommandLine has "/sbin/modprobe"
+    and ProcessCommandLine has_any(AllSuspiciousModules)
+| where DeviceName in (SuspiciousEP)
+| extend ThreatFamily = case(
+    ProcessCommandLine has_any(DirtyFragCL), "DirtyFrag",
+    ProcessCommandLine has_any(CopyFailCL), "CopyFail",
+    "Unknown"
+  )
+| project TimeGenerated, DeviceName, AccountName, ProcessCommandLine, ThreatFamily
+| order by DeviceName asc, TimeGenerated asc
