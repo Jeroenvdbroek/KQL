@@ -1,0 +1,68 @@
+// ============================================================
+// Linux LPE - CopyFail / DirtyFrag / Electric Boogaloo
+// CVE-2026-31431 (CopyFail) / CVE-2026-43284 (ESP)
+// CVE-2026-43500 (RxRPC)
+// MITRE: T1068, T1611, T1547.006, T1014
+// Severity: High
+// ============================================================
+
+let LookbackWindow = ago(1h);
+
+// ── Module lists ─────────────────────────────────────────────
+let CopyFailModules = dynamic([
+    "net-pf-38",
+    "algif-aead",
+    "crypto-authencesn(hmac(sha256),cbc(aes))"
+]);
+let DirtyFragRxRPCModules = dynamic([
+    "net-pf-33",
+    "crypto-pcbc",
+    "crypto-fcrypt",
+    "crypto-fcrypt-all",
+    "crypto-pcbc(fcrypt)",
+    "crypto-pcbc(fcrypt)-all"
+]);
+let ESPModules = dynamic([
+    "esp4",
+    "esp6"
+]);
+let AllModules = array_concat(CopyFailModules, DirtyFragRxRPCModules, ESPModules);
+
+// ── Allow lists ──────────────────────────────────────────────
+let LegitModuleParents = dynamic([
+    "systemd", "NetworkManager", "strongswan",
+    "pluto", "charon", "xl2tpd", "vpnc"
+]);
+
+// ── Suspicious endpoints ─────────────────────────────────────
+let SuspiciousEP =
+    DeviceProcessEvents
+    | where TimeGenerated > LookbackWindow
+    | where (FileName == "kmod" or InitiatingProcessFileName == "kmod")
+        or (ProcessCommandLine has "/sbin/modprobe -q"
+            and ProcessCommandLine has_any(CopyFailModules))
+    | where ProcessCommandLine has_any(AllModules)
+    | where InitiatingProcessFileName !in (LegitModuleParents)
+    | where FileName !in ("modinfo", "modprobe", "lsmod", "depmod")
+    | summarize Count=count() by DeviceName, AccountName
+    | where Count >= 1
+    | distinct DeviceName;
+
+DeviceProcessEvents
+| where TimeGenerated > LookbackWindow
+| where (FileName == "kmod" or InitiatingProcessFileName == "kmod")
+    or (ProcessCommandLine has "/sbin/modprobe -q"
+        and ProcessCommandLine has_any(CopyFailModules))
+| where ProcessCommandLine has_any(AllModules)
+| where InitiatingProcessFileName !in (LegitModuleParents)
+| where FileName !in ("modinfo", "modprobe", "lsmod", "depmod")
+| where DeviceName in (SuspiciousEP)
+| extend ThreatFamily = case(
+    ProcessCommandLine has_any(CopyFailModules),       "CopyFail",
+    ProcessCommandLine has_any(DirtyFragRxRPCModules), "DirtyFrag_RxRPC",
+    ProcessCommandLine has_any(ESPModules),            "DirtyFrag_ESP / ElectricBoogaloo",
+    "Unknown"
+)
+| project TimeGenerated, DeviceName, AccountName,
+    ProcessCommandLine, ThreatFamily
+| order by DeviceName asc, TimeGenerated asc
