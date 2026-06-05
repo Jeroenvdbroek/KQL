@@ -1,0 +1,23 @@
+let Kali365IOCs = ThreatIntelIndicators
+| where IsActive == true
+| where Tags has "kali365"
+| where ObservableKey == "domain-name:value"
+| where isnotempty(ObservableValue)
+| project Domain = ObservableValue, Confidence, Tags;
+
+EmailUrlInfo
+| extend NormalizedDomain = trim(@"^www\.", UrlDomain)
+| join kind=inner Kali365IOCs on $left.NormalizedDomain == $right.Domain
+| join kind=inner EmailEvents on NetworkMessageId
+| project
+    Timestamp,
+    SenderFromAddress,
+    RecipientEmailAddress,
+    Subject,
+    Url,
+    UrlDomain,
+    NormalizedDomain,
+    Confidence,
+    DeliveryAction,
+    DeliveryLocation
+| order by Timestamp desc
